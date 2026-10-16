@@ -1,0 +1,51 @@
+{
+  "platform": {
+    "type": "yuketang",
+    "host": "https://www.yuketang.cn",
+    "term": "latest"
+  },
+  "sync": {
+    "interval_minutes": 30,
+    "jitter_seconds": 90,
+    "horizon_days": 120,
+    "request_delay": 0.7
+  },
+  "remind": {
+    "enabled": true,
+    "threshold_hours": [
+      24,
+      6,
+      1
+    ],
+    "new_homework": true,
+    "new_exam": true,
+    "new_notice": false,
+    "exam_lead_hours": [
+      24,
+      1
+    ],
+    "sound": true,
+    "quiet_hours": [
+      23,
+      7
+    ]
+  },
+  "widget": {
+    "x": null,
+    "y": null,
+    "theme": "light",
+    "always_on_top": false,
+    "opacity": 0.97,
+    "show_notices": true,
+    "notice_count": 3,
+    "background_image": "",
+    "background_overlay": 78
+  },
+  "notices": {
+    "enabled": true,
+    "limit": 30
+  },
+  "storage": {
+    "selected": false
+  }
+}

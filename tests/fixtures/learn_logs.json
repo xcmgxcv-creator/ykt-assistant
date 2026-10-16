@@ -1,0 +1,68 @@
+{
+  "data": {
+    "activities": [
+      {
+        "type": 2,
+        "id": 1001,
+        "courseware_id": 5001,
+        "title": "第1章 课后作业(3)",
+        "create_time": 1791000000000,
+        "end": 1792425600000,
+        "count": 3,
+        "has_mooc": true,
+        "attend_status": 0,
+        "is_finished": false,
+        "view": {"depth": 0, "done": false}
+      },
+      {
+        "type": 2,
+        "id": 1002,
+        "title": "第2章 课后作业(6)（已完成）",
+        "create_time": 1790000000000,
+        "end": 1790000000000,
+        "count": 5,
+        "is_finished": true,
+        "view": {"depth": 5, "done": true}
+      },
+      {
+        "type": 2,
+        "id": 1003,
+        "title": "第0章 已过期作业",
+        "create_time": 1599000000000,
+        "end": 1600000000000,
+        "count": 2,
+        "is_finished": false,
+        "view": {"depth": 0, "done": false}
+      },
+      {
+        "type": 2,
+        "id": 1005,
+        "title": "无截止时间的作业",
+        "create_time": 1791500000000,
+        "end": 0,
+        "count": 1,
+        "is_finished": false,
+        "view": {"depth": 0, "done": false}
+      },
+      {
+        "type": 14,
+        "id": 1004,
+        "title": "§1 课件（非作业）",
+        "create_time": 1790500000000,
+        "end": 1900000000000,
+        "count": 0,
+        "is_finished": false,
+        "view": {"depth": 0, "done": false}
+      },
+      {
+        "type": 7,
+        "id": 1006,
+        "title": "未知类型活动",
+        "create_time": 1792000000000,
+        "end": 1900000000000,
+        "is_finished": false,
+        "view": {"depth": 0, "done": false}
+      }
+    ]
+  }
+}

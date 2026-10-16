@@ -1,0 +1,67 @@
+{
+  "data": {
+    "list": [
+      {
+        "term": 202601,
+        "name": "示例课程A",
+        "short_name": null,
+        "students_count": 42,
+        "time": 1790000000000,
+        "teacher": {
+          "user_id": 1,
+          "name": "教师甲",
+          "avatar": "https://example.invalid/avatar-a.png"
+        },
+        "published_kg_id": null,
+        "create_time": 1780000000000,
+        "role": 5,
+        "agent_id": null,
+        "project_type": null,
+        "ways_of_operation": null,
+        "university_course_series_id": "",
+        "color_code": 1,
+        "classroom_id": 88880001,
+        "top_time": 0,
+        "course": {
+          "en_name": null,
+          "manage_permission": false,
+          "name": "示例课程A",
+          "short_name": null,
+          "admin_id": 9,
+          "platform": 3,
+          "university_id": 9999,
+          "type": 1,
+          "id": 77770001,
+          "is_pro": false,
+          "university_mini_logo": "https://example.invalid/logo.png",
+          "university_name": "示例大学"
+        }
+      },
+      {
+        "term": 202502,
+        "name": "示例课程B（上学期）",
+        "classroom_id": 88880002,
+        "teacher": {"user_id": 2, "name": "教师乙", "avatar": null},
+        "course": {
+          "id": 77770002,
+          "university_id": 9999,
+          "platform": 3,
+          "name": "示例课程B（上学期）"
+        }
+      },
+      {
+        "term": 0,
+        "name": "无学期课程",
+        "classroom_id": 88880003,
+        "teacher": null,
+        "course": {"id": 77770003, "university_id": 9999, "name": "无学期课程"}
+      },
+      {
+        "term": 202601,
+        "name": "缺少 classroom_id 的脏数据（应被跳过）",
+        "classroom_id": 0,
+        "course": {"id": 77770004, "name": "脏数据"}
+      }
+    ]
+  }
+}

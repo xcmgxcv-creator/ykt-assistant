@@ -1,0 +1,240 @@
+"""路径常量与配置读写。
+
+配置分两处存放：
+    config.json                普通设置（刷新间隔、提醒阈值、窗口位置主题……）
+    data/session_cookies.json  登录会话，DPAPI 加密后单独放，避免和设置混在一起
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import shutil
+import sys
+import threading
+from pathlib import Path
+from typing import Any
+
+from . import crypto
+
+
+def _base_dir() -> Path:
+    """程序目录：源码运行时是项目根，打包成 exe 后是 exe 所在目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+BASE_DIR = _base_dir()
+DATA_DIR = BASE_DIR / "data"
+CONFIG_PATH = BASE_DIR / "config.json"
+STORAGE_PATH = BASE_DIR / "storage.json"
+try:
+    _location = json.loads(STORAGE_PATH.read_text(encoding="utf-8"))
+    DATA_DIR = Path(_location["data_dir"]).resolve()
+    CONFIG_PATH = DATA_DIR / "config.json"
+except (OSError, ValueError, KeyError, TypeError):
+    pass
+CREDENTIAL_PATH = DATA_DIR / "credentials.bin"
+COOKIE_PATH = DATA_DIR / "session_cookies.json"
+DB_PATH = DATA_DIR / "ykt.db"
+LOG_PATH = DATA_DIR / "app.log"
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "sync": {
+        # 雨课堂接口侧限流宽松，但仍保持间隔与抖动，避免不必要的压力
+        "interval_minutes": 30,
+        "jitter_seconds": 90,
+        "horizon_days": 120,
+        "request_delay": 0.7,
+    },
+    "platform": {
+        # 雨课堂按学校独立部署：域名因校而异，因此 host 必须可改。
+        # 填校级根地址，不要带尾斜杠。
+        "type": "yuketang",
+        "host": "https://www.yuketang.cn",
+        "term": "latest",       # chapter/schedule 接口的 term 参数
+    },
+    "remind": {
+        "enabled": True,
+        "threshold_hours": [24, 6, 1],
+        "new_homework": True,
+        "new_exam": True,
+        "new_notice": False,
+        "exam_lead_hours": [24, 1],
+        "sound": True,
+        # 深夜免打扰：23 点至次日 7 点只累积不弹窗（紧急的过期作业除外）
+        "quiet_hours": [23, 7],
+    },
+    "widget": {
+        "x": None,
+        "y": None,
+        "theme": "light",
+        "always_on_top": False,   # 默认不置顶：启动时不压住用户正在用的窗口
+        "opacity": 0.97,
+        "show_notices": True,
+        "notice_count": 3,
+        "background_image": "",
+        "background_overlay": 78,
+    },
+    "notices": {
+        "enabled": True,
+        "limit": 30,
+    },
+    "storage": {"selected": False},
+}
+
+_lock = threading.RLock()
+_cache: dict[str, Any] | None = None
+
+
+def ensure_dirs() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    out = copy.deepcopy(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load(refresh: bool = False) -> dict[str, Any]:
+    """读取配置（带内存缓存）。文件不存在或损坏时退回默认值。"""
+    global _cache
+    with _lock:
+        if _cache is not None and not refresh:
+            return _cache
+        raw: dict = {}
+        if CONFIG_PATH.exists():
+            try:
+                raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                raw = {}
+        _cache = _deep_merge(DEFAULT_CONFIG, raw)
+        return _cache
+
+
+def save(cfg: dict[str, Any] | None = None) -> None:
+    """写回配置（原子写：先写临时文件再替换，避免断电写坏）。"""
+    global _cache
+    with _lock:
+        data = cfg if cfg is not None else _cache or DEFAULT_CONFIG
+        _cache = data
+        ensure_dirs()
+        tmp = CONFIG_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, CONFIG_PATH)
+
+
+def update(section: str, **values) -> dict[str, Any]:
+    """局部更新某一节配置并落盘，返回最新配置。"""
+    cfg = copy.deepcopy(load(refresh=True))
+    cfg.setdefault(section, {}).update(values)
+    save(cfg)
+    return cfg
+
+
+# ------------------------------------------------------------------ 会话残留
+
+def clear_credentials() -> None:
+    """删除上游遗留在同目录的密码文件（雨课堂版不再保存账号密码）。"""
+    CREDENTIAL_PATH.unlink(missing_ok=True)
+
+
+def _set_data_paths(directory: Path, config_path: Path | None = None) -> None:
+    global DATA_DIR, CONFIG_PATH, CREDENTIAL_PATH, COOKIE_PATH, DB_PATH, LOG_PATH, _cache
+    DATA_DIR = directory
+    CONFIG_PATH = config_path or directory / "config.json"
+    CREDENTIAL_PATH = directory / "credentials.bin"
+    COOKIE_PATH = directory / "session_cookies.json"
+    DB_PATH = directory / "ykt.db"
+    LOG_PATH = directory / "app.log"
+    _cache = None
+
+
+def managed_files() -> list[Path]:
+    """只枚举程序拥有的文件，不删除用户选择的目录或其中的其他文件。"""
+    names = ("ykt.db", "ykt.db-wal", "ykt.db-shm", "session_cookies.json",
+             "credentials.bin", "credentials.bin.tmp",
+             "background.png", "background.tmp", "app.log", "crash.log", "launch-error.log")
+    files = [CONFIG_PATH, CONFIG_PATH.with_suffix(".json.tmp")] + [DATA_DIR / name for name in names]
+    for folder in (DATA_DIR / "icons", DATA_DIR / "dump"):
+        if folder.is_symlink():
+            raise OSError("数据子目录不能是符号链接")
+        if folder.exists():
+            for path in folder.rglob("*"):
+                if path.is_symlink():
+                    raise OSError("数据目录不能包含符号链接")
+                if path.is_file():
+                    files.append(path)
+    for path in files:
+        if path.is_symlink():
+            raise OSError("数据文件不能是符号链接")
+    return [path for path in files if path.is_file()]
+
+
+def select_data_directory(directory: str | Path) -> None:
+    """调用前必须关闭同步、数据库和日志。先复制成功再切换位置。"""
+    target = Path(directory).expanduser().resolve()
+    source = DATA_DIR.resolve()
+    if target == source:
+        update("storage", selected=True)
+        return
+    if source in target.parents or target in source.parents:
+        raise OSError("请选择与当前数据目录互不包含的文件夹")
+    target.mkdir(parents=True, exist_ok=True)
+    if (target / "config.json").exists():
+        raise OSError("所选文件夹中已有 config.json，请选择空文件夹")
+    cfg = copy.deepcopy(load())
+    copies = []
+    for path in managed_files():
+        if path in (CONFIG_PATH, CONFIG_PATH.with_suffix(".json.tmp")):
+            relative = Path(path.name)
+        else:
+            relative = path.relative_to(DATA_DIR)
+        destination = target / relative
+        if destination.exists():
+            raise OSError(f"所选文件夹中已有 {relative}，请选择空文件夹")
+        copies.append((path, destination))
+    created = []
+    try:
+        for path, destination in copies:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            created.append(destination)
+            shutil.copy2(path, destination)
+        if cfg["widget"].get("background_image") == str(source / "background.png"):
+            cfg["widget"]["background_image"] = str(target / "background.png")
+        cfg["storage"]["selected"] = True
+        config_target = target / "config.json"
+        config_target.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        if config_target not in created:
+            created.append(config_target)
+        pointer = STORAGE_PATH.with_suffix(".json.tmp")
+        pointer.write_text(json.dumps({"data_dir": str(target)}, ensure_ascii=False), encoding="utf-8")
+        os.replace(pointer, STORAGE_PATH)
+    except Exception:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
+    _set_data_paths(target)
+    for path, _destination in copies:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # 新位置已提交，清理失败不能回滚到一半迁移的旧位置。
+            pass
+
+
+def clear_all_data() -> None:
+    """关闭后台与文件句柄后清理本地数据，保留所选位置。"""
+    for path in managed_files():
+        path.unlink(missing_ok=True)
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["storage"]["selected"] = True
+    save(cfg)

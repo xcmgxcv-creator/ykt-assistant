@@ -1,0 +1,25 @@
+{
+  "data": {
+    "status": 1,
+    "message": "ok",
+    "data": [
+      {
+        "id": 9001,
+        "title": "关于课程考核方式的通知",
+        "content": "本课程平时成绩占 40%。",
+        "sender": "教师甲",
+        "publish_time": 1791000000000,
+        "is_read": false
+      },
+      {
+        "id": 9002,
+        "title": "已读公告",
+        "content": "……",
+        "sender": "教师乙",
+        "publish_time": 1790000000000,
+        "is_read": true
+      }
+    ],
+    "has_old_notice": false
+  }
+}

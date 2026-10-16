@@ -1,0 +1,353 @@
+"""程序入口。
+
+用法：
+    python -m xxt.main                 正常启动（托盘常驻 + 桌面悬浮清单）
+    python -m xxt.main --tray          启动后只留托盘，不弹窗口
+    python -m xxt.main --sync-once     不开界面，同步一次并打印结果（排错用）
+    python -m xxt.main --reset         清除本机保存的登录会话与账号残留
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from datetime import datetime
+
+from . import APP_NAME, __version__, config
+from .notify import Notifier
+from .rainclass.client import RainClassClient
+from .store import Store
+from .sync import SyncService
+
+log = logging.getLogger("xxt")
+
+
+# ------------------------------------------------------------------ 日志
+
+def setup_logging(verbose: bool = False) -> None:
+    for handler in logging.getLogger().handlers[:]:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+    config.ensure_dirs()
+    # 首次运行时把默认配置落盘（config.json 在程序目录下），方便用户直接改
+    if not config.CONFIG_PATH.exists():
+        try:
+            config.save()
+        except OSError:
+            pass
+    level = logging.DEBUG if verbose else logging.INFO
+    root = logging.getLogger()
+    root.setLevel(level)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s | %(message)s")
+
+    # 打包成 -w（无控制台）后 sys.stdout/stderr 是 None，写流会炸，只有源码运行才有控制台
+    if sys.stdout is not None:
+        stream = logging.StreamHandler(sys.stdout)
+        stream.setFormatter(fmt)
+        root.addHandler(stream)
+
+    # 日志文件任何情况下都要写：打包后没有控制台，出问题只能靠它排查
+    try:
+        file_handler = logging.FileHandler(config.LOG_PATH, encoding="utf-8")
+        file_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+    except OSError:
+        pass
+
+
+# ------------------------------------------------------------------ 无界面命令
+
+def cmd_sync_once(args) -> int:
+    store = Store()
+    client = RainClassClient(request_delay=config.load()["sync"]["request_delay"])
+    notifier = Notifier(store, toast=lambda t, b, u: log.info("【提醒】%s：%s", t, b))
+    service = SyncService(store, client, notifier)
+    report = service.sync_once()
+    print("=" * 60)
+    print(report.summary())
+    if report.new_assignments:
+        print("\n新增作业：")
+        for row in report.new_assignments:
+            print(f"  · [{row['course']}] {row['title']}　{row.get('status') or ''}")
+    if report.new_exams:
+        print("\n新增考试：")
+        for row in report.new_exams:
+            print(f"  · {row['name']}　{row.get('exam_time') or ''}")
+    if report.new_notices:
+        print(f"\n新公告 {len(report.new_notices)} 条")
+    pending = store.pending_assignments()
+    now_iso = datetime.now().isoformat(timespec="minutes")
+    live = [r for r in pending
+            if not r.get("deadline_dt") or r["deadline_dt"] >= now_iso]
+    stale = [r for r in pending
+             if r.get("deadline_dt") and r["deadline_dt"] < now_iso]
+    print(f"\n待完成作业 {len(live)} 项：")
+    for row in live[:20]:
+        print(f"  · [{row['course']}] {row['title']}　截止 {row.get('deadline') or '未知'}"
+              f"　状态 {row.get('status') or '未知'}")
+    if stale:
+        print(f"\n已过期未提交 {len(stale)} 项（悬浮卡片按设计不显示）：")
+        for row in stale[:20]:
+            print(f"  · [{row['course']}] {row['title']}　截止 {row.get('deadline') or '未知'}")
+    exams = store.unfinished_exams()
+    if exams:
+        print(f"\n课中考试 {len(exams)} 场：")
+        for row in exams[:20]:
+            print(f"  · {row['name']}　{row.get('exam_time') or ''}"
+                  f"　{row.get('answer_status') or ''}")
+    else:
+        print("\n课中考试 0 场（雨课堂学生端没有课后考试清单，属正常）")
+    if report.errors:
+        print("\n错误：")
+        for err in report.errors:
+            print("  ! " + err)
+    store.close()
+    return 0 if report.ok else 1
+
+
+def cmd_reset(args) -> int:
+    config.clear_credentials()
+    if config.COOKIE_PATH.exists():
+        config.COOKIE_PATH.unlink()
+    print("已清除本机保存的登录会话与账号残留，请重新扫码登录。")
+    return 0
+
+
+# ------------------------------------------------------------------ 图形界面
+
+def run_gui(args) -> int:
+    try:
+        from PySide6.QtCore import QObject, QSharedMemory, QTimer, Qt, Signal, Slot
+        from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
+    except ImportError:
+        print("未安装 PySide6，无法启动界面。请先运行：\n"
+              "  .venv\\Scripts\\python.exe -m pip install -r requirements.txt")
+        return 2
+
+    from .ui import style
+    from .ui.dialogs import LoginDialog, SettingsDialog
+    from .ui.tray import TrayIcon, make_icon
+    from .ui.widget import TaskCard
+
+    app = QApplication(sys.argv[:1])
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(__version__)
+    app.setQuitOnLastWindowClosed(False)
+    app.setWindowIcon(make_icon())          # 对话框、任务栏都用同一个图标
+    # 固定用 Fusion + 自己的调色板：本机若开着系统深色模式，默认调色板会让
+    # 原生绘制的部件（微调框箭头、消息框、下拉列表）变深，跟样式表打架。
+    app.setStyle("Fusion")
+    app.setPalette(style.build_palette(config.load().get("widget", {})
+                                       .get("theme", "light")))
+
+    # 单实例：已经有一个在跑就退出，避免两个悬浮窗
+    guard = QSharedMemory("ykt-assistant-single-instance")
+    if not guard.create(1):
+        QMessageBox.information(None, APP_NAME, "雨课堂小助手已经在运行了（看右下角托盘）。")
+        return 0
+
+    class Bridge(QObject):
+        report = Signal(object)
+        syncing = Signal(bool)
+        toast = Signal(str, str, bool)
+        progress = Signal(str)
+
+    class Assistant(QObject):
+        def __init__(self):
+            super().__init__()
+            self._maintenance_pending = False
+            self.bridge = Bridge()
+            self._build_backend()
+            self.card = TaskCard(self.store, self.sync)
+            self.tray = TrayIcon(self.card, self.refresh_now, self.open_settings,
+                                 self.quit, on_login=self.login)
+            self.bridge.report.connect(self.apply_report, Qt.ConnectionType.QueuedConnection)
+            self.bridge.syncing.connect(self.card.set_syncing, Qt.ConnectionType.QueuedConnection)
+            self.bridge.toast.connect(self.tray.toast, Qt.ConnectionType.QueuedConnection)
+            self.bridge.progress.connect(self.card.show_progress, Qt.ConnectionType.QueuedConnection)
+
+        def _build_backend(self):
+            self.store = Store()
+            self.client = RainClassClient(
+                request_delay=config.load()["sync"]["request_delay"])
+            self.notifier = Notifier(self.store,
+                                     toast=lambda t, b, u: self.bridge.toast.emit(t, b, u))
+            self.sync = SyncService(self.store, self.client, self.notifier,
+                                    on_report=self.bridge.report.emit,
+                                    on_progress=self.bridge.progress.emit)
+
+        def _replace_backend(self, action):
+            self.sync.stop(timeout=0)
+            if self.sync.busy:
+                raise OSError("正在同步，请稍后再更改数据目录")
+            self.client.session.close()
+            self.store.close()
+            for handler in logging.getLogger().handlers[:]:
+                logging.getLogger().removeHandler(handler)
+                handler.close()
+            try:
+                action()
+            finally:
+                setup_logging(args.verbose)
+                style._ARROW_CACHE.clear()
+                self._build_backend()
+                self.card.store, self.card.sync = self.store, self.sync
+                self.card.set_need_login(not config.COOKIE_PATH.exists())
+                self.card.apply_config()
+                self.tray.apply_theme()
+                self.card.show_card()
+
+        def choose_directory(self, path):
+            from pathlib import Path
+            if Path(path).resolve() == config.DATA_DIR.resolve():
+                config.update("storage", selected=True)
+            else:
+                self._replace_backend(lambda: config.select_data_directory(path))
+
+        def maintenance(self, action):
+            self._maintenance_pending = True
+            self.sync.stop(timeout=0)
+            self.card.set_status("正在停止同步并准备处理本地数据…")
+
+            def finish():
+                if self.sync.busy:
+                    QTimer.singleShot(100, finish)
+                    return
+                try:
+                    self._replace_backend(action)
+                    self.card.set_status("本地数据已更新，未登录时请点击「去登录」")
+                except Exception as exc:
+                    QMessageBox.warning(self.card, "操作未完成", str(exc))
+                finally:
+                    self._maintenance_pending = False
+                    self.sync.start()
+
+            finish()
+
+        # ---------------- 生命周期
+        def start(self, start_hidden: bool) -> None:
+            self.tray.show()
+            self.card.set_status("正在启动…")
+            if not start_hidden:
+                self.card.show_card()
+            # 首次启动不主动弹登录框：只提示，由用户点卡片上的「去登录」
+            # （或托盘菜单的「登录 / 重新登录…」）再弹
+            if not config.COOKIE_PATH.exists():
+                self.card.set_status("尚未登录，点右下角「去登录」", "warn")
+            self.sync.start()
+
+        def quit(self) -> None:
+            log.info("退出中…")
+            self.sync.stop()
+            self.card.save_position()
+            try:
+                self.store.close()
+            except Exception:
+                pass
+            self.tray.hide()
+            app.quit()
+
+        # ---------------- 槽函数
+        @Slot(object)
+        def apply_report(self, report) -> None:
+            if self._maintenance_pending:
+                return
+            self.card.set_syncing(False)
+            self.card.show_report(report)
+            if not report.ok and "未登录" in " ".join(report.errors):
+                if config.COOKIE_PATH.exists():
+                    self.card.set_status("登录已失效，请重新扫码登录", "error")
+                else:
+                    self.card.set_status("尚未登录，点右下角「去登录」", "warn")
+
+        @Slot()
+        def refresh_now(self) -> None:
+            if self._maintenance_pending or self.sync.busy:
+                return
+            self.card.set_syncing(True)
+            self.sync.trigger()
+
+        @Slot()
+        def login(self) -> None:
+            if self._maintenance_pending:
+                return
+            # 扫码期间客户端只被登录线程使用，所以先把同步停掉再弹框
+            self.sync.stop(timeout=0)
+            dialog = LoginDialog(self.client, self.card,
+                                 directory_fn=self.choose_directory)
+            ok = dialog.exec()
+            self.sync.start()
+            if ok:
+                self.card.set_need_login(False)
+                self.card.set_status("登录成功，开始同步…", "ok")
+                self.refresh_now()
+
+        @Slot()
+        def open_settings(self) -> None:
+            if self._maintenance_pending:
+                return
+            dialog = SettingsDialog(self.card, store=self.store)
+            if dialog.exec():
+                try:
+                    dialog.save()
+                except Exception as exc:
+                    QMessageBox.warning(self.card, "设置保存失败", str(exc))
+                    return
+                from pathlib import Path
+                if Path(dialog.data_directory.text()).resolve() != config.DATA_DIR.resolve():
+                    self.maintenance(lambda: config.select_data_directory(dialog.data_directory.text()))
+                    return
+                self.card.apply_config()
+                self.tray.apply_theme()
+                self.card.show_card()
+            elif dialog.reset_requested:
+                def reset_data():
+                    from . import startup
+                    if startup.is_enabled() and not startup.set_enabled(False):
+                        raise OSError("无法关闭开机自启，尚未清除数据")
+                    config.clear_all_data()
+                self.maintenance(reset_data)
+            elif dialog.logout_requested:
+                self.card.set_need_login(True)
+                self.card.set_status("已退出登录，点右下角「去登录」重新扫码", "warn")
+                self.card.reload()
+            else:
+                self.card.reload()
+
+    assistant = Assistant()
+    assistant.card.refreshRequested.connect(assistant.refresh_now)
+    assistant.card.loginRequested.connect(assistant.login)
+    assistant.card.settingsRequested.connect(assistant.open_settings)
+
+    tray_ok = QSystemTrayIcon.isSystemTrayAvailable()
+    if not tray_ok:
+        log.warning("系统托盘不可用，窗口关闭后将无法唤起")
+
+    assistant.start(start_hidden=args.tray)
+    return app.exec()
+
+
+# ------------------------------------------------------------------ 入口
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="xxt.main", description=APP_NAME)
+    parser.add_argument("--tray", action="store_true", help="启动后只留托盘图标")
+    parser.add_argument("--sync-once", action="store_true", help="不开界面，同步一次")
+    parser.add_argument("--reset", action="store_true",
+                        help="清除保存的登录会话与账号残留")
+    parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
+    args = parser.parse_args(argv)
+
+    setup_logging(args.verbose)
+    log.info("%s v%s 启动", APP_NAME, __version__)
+
+    if args.reset:
+        return cmd_reset(args)
+    if args.sync_once:
+        return cmd_sync_once(args)
+    return run_gui(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

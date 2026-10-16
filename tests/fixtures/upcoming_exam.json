@@ -1,0 +1,15 @@
+{
+  "data": {
+    "onLessonClassrooms": [],
+    "upcomingExam": [
+      {
+        "exam_id": 6001,
+        "classroom_id": 88880001,
+        "course_name": "示例课程A",
+        "title": "随堂测验",
+        "start_time": 1900000000000,
+        "duration": 30
+      }
+    ]
+  }
+}

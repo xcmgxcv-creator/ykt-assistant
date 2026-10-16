@@ -1,0 +1,18 @@
+{
+  "data": {
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "id": 7001,
+        "title": "功能上新：教学智友",
+        "content": "雨课堂智能体上线。",
+        "jump_link": "https://example.invalid/help?list=76",
+        "create_time": 1792000000000
+      }
+    ],
+    "jump_link": "",
+    "has_message": true
+  }
+}
